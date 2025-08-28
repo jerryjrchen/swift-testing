@@ -201,6 +201,17 @@ public struct Test: Sendable {
   @_spi(ForToolsIntegrationOnly)
   public var isSynthesized: Bool = false
 
+  /// - If this was a property-based test, this was the generator used to
+  /// synthesize the test case and help with shrinking it
+  /// Rest of the code is kinda yikes but this is for demoing only.
+  /// - Also Any needs to be a sendable type, it's actually supposed to match up
+  /// with Arbitrary.GeneratedValue.
+  /// - Ideally just store a shrinking case generator here maybe??
+  /// Idk what I am doing tbh
+  public var generatorType: (any Arbitrary)?
+  public var testFunction: (@Sendable (any Sendable) async throws -> Void)?
+  public var shrinkingCaseGenerator: (@Sendable (any Sendable) async -> [Test.Case])?
+
   /// Initialize an instance of this type representing a test suite type.
   init(
     displayName: String? = nil,
@@ -231,7 +242,13 @@ public struct Test: Sendable {
     containingTypeInfo: TypeInfo? = nil,
     xcTestCompatibleSelector: __XCTestCompatibleSelector? = nil,
     testCases: @escaping @Sendable () async throws -> Test.Case.Generator<S>,
-    parameters: [Parameter]
+    parameters: [Parameter],
+    generatorType: (any Arbitrary)? = nil,
+    // Would ideally just store a shrinking case generator here but I can't
+    // figure out how to make the types work out well
+    // I probably don't need all these but uh you never know with a prototype what you'll need later I guess
+    testFunction: (@Sendable (any Sendable) async throws -> Void)? = nil,
+    shrinkingCaseGenerator: (@Sendable (any Sendable) async -> [Test.Case])? = nil
   ) {
     self.name = name
     self.displayName = displayName
@@ -241,6 +258,9 @@ public struct Test: Sendable {
     self.xcTestCompatibleSelector = xcTestCompatibleSelector
     self.testCasesState = .unevaluated { .init(try await testCases()) }
     self.parameters = parameters
+    self.generatorType = generatorType
+    self.testFunction = testFunction
+    self.shrinkingCaseGenerator = shrinkingCaseGenerator
   }
 
   /// Initialize an instance of this type representing a test function.
@@ -262,6 +282,12 @@ public struct Test: Sendable {
     self.xcTestCompatibleSelector = xcTestCompatibleSelector
     self.testCasesState = .evaluated(.init(testCases))
     self.parameters = parameters
+  }
+}
+
+extension Test {
+  var isPropertyBasedTest: Bool {
+    self.generatorType != nil
   }
 }
 

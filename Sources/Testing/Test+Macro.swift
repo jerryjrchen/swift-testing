@@ -236,6 +236,13 @@ public macro Test<C>(
   arguments collection: C
 ) = #externalMacro(module: "TestingMacros", type: "TestDeclarationMacro") where C: Collection & Sendable, C.Element: Sendable
 
+/// Create parameterized tests with a randomized generator.
+@attached(peer) public macro Test<G>(
+  _ traits: any TestTrait...,
+  generator: G
+) = #externalMacro(module: "TestingMacros", type: "TestDeclarationMacro")
+ where G: Arbitrary
+
 extension Test {
   /// Create an instance of ``Test`` for a parameterized function.
   ///
@@ -260,6 +267,68 @@ extension Test {
     let parameters = paramTuples.parameters
     let caseGenerator = { @Sendable in Case.Generator(arguments: try await collection(), parameters: parameters, testFunction: testFunction) }
     return Self(name: testFunctionName, displayName: displayName, traits: traits, sourceLocation: sourceLocation, containingTypeInfo: containingTypeInfo, xcTestCompatibleSelector: xcTestCompatibleSelector, testCases: caseGenerator, parameters: parameters)
+  }
+
+  /// Create an instance of ``Test`` for a parameterized function using aa generator.
+  ///
+  /// - Warning: This function is used to implement the `@Test` macro. Do not
+  ///   call it directly.
+  public static func __function<G>(
+    named testFunctionName: String,
+    in containingType: (any ~Copyable.Type)?,
+    xcTestCompatibleSelector: __XCTestCompatibleSelector?,
+    displayName: String? = nil,
+    traits: [any TestTrait],
+    generator generatorWrapped: @escaping @Sendable () -> G,
+    sourceLocation: SourceLocation,
+    parameters paramTuples: [__Parameter],
+    testFunction: @escaping @Sendable (G.GeneratedValue) async throws -> Void
+  ) -> Self where G: Arbitrary {
+
+    let containingTypeInfo: TypeInfo? = if let containingType {
+      TypeInfo(describing: containingType)
+    } else {
+      nil
+    }
+    let parameters = paramTuples.parameters
+
+    let generator = generatorWrapped()
+
+
+    let exampleCount = 10 // Should probs be tunable
+
+    let caseGenerator = { @Sendable in
+      var rng = SystemRandomNumberGenerator()
+      let arguments = (0..<exampleCount).map { _ in generator.generate(with: &rng) }
+
+      return Test.Case.Generator(
+        arguments: arguments,
+        parameters: parameters,
+        testFunction: testFunction
+      )
+    }
+
+    let testFunctionForShrinking = { @Sendable (arg: Any) in
+      // Obviously not the greatest thing to do here but I promise to only use
+      // this with arg produced by the generator
+      try await testFunction(arg as! G.GeneratedValue)
+    }
+
+
+    // This should be returning a Sequence or summat but I couldn't get the type erasure
+    // to work quite how I wanted
+    let shrinkingCaseGenerator = { @Sendable (max: any Sendable) in
+      // Obviously not the greatest thing to do here but I promise to only use
+      // this with argument produced by the generator
+      let examples = generator.shrink(atMost: max as! G.GeneratedValue)
+      return Case.Generator(
+        arguments: examples,
+        parameters: parameters,
+        testFunction: testFunction
+      ).map { $0 }
+    }
+
+    return Self(name: testFunctionName, displayName: displayName, traits: traits, sourceLocation: sourceLocation, containingTypeInfo: containingTypeInfo, xcTestCompatibleSelector: xcTestCompatibleSelector, testCases: caseGenerator, parameters: parameters, generatorType: generator, testFunction: testFunctionForShrinking, shrinkingCaseGenerator: shrinkingCaseGenerator)
   }
 }
 

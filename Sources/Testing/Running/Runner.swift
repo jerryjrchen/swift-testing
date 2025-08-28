@@ -246,7 +246,12 @@ extension Runner {
           try await _applyScopingTraits(for: step.test, testCase: nil) {
             // Run the test function at this step (if one is present.)
             if let testCases = step.test.testCases {
-              await _runTestCases(testCases, within: step)
+              let test = step.test
+              if test.isPropertyBasedTest {
+                await _runPropertyTestCases(testCases, within: step)
+              } else {
+                await _runTestCases(testCases, within: step)
+              }
             }
 
             // Run the children of this test (i.e. the tests in this suite.)
@@ -340,6 +345,159 @@ extension Runner {
     }
   }
 
+  struct PropertyBasedTestFailure {
+    var test: Test
+    var testCase: Test.Case
+  }
+
+  /// Ok pay attention y'all property based tests are serious business
+  /// Instead of doing bog standard parameterised test execution, we do the
+  /// following:
+  /// - Exec test cases until encountering a failing test
+  /// - Cancel the test runs once a failing test is found
+  /// - Shrink to the minimal example from there and record issue for it
+  private static func _runPropertyTestCases(_ testCases: some Sequence<Test.Case>, within step: Plan.Step) async {
+    // Apply the configuration's test case filter.
+    let testCaseFilter = _configuration.testCaseFilter
+    let testCases = testCases.lazy.filter { testCase in
+      testCaseFilter(testCase, step.test)
+    }
+    let failingCase = Locked<PropertyBasedTestFailure?>(rawValue: nil)
+
+    let configuration = {
+      var firstPassConfiguration = _configuration
+
+      firstPassConfiguration.eventHandler = { [oldEventHandler = firstPassConfiguration.eventHandler] event, context in
+        if
+          case let .issueRecorded(issue) = event.kind,
+          issue.isFailure,
+          let test = context.test,
+          let testCase = context.testCase
+        {
+          failingCase.withLock {
+            $0 = .init(test: test, testCase: testCase)
+          }
+        } else {
+          oldEventHandler(event, context)
+        }
+      }
+
+      return firstPassConfiguration
+    }()
+
+    // First pass: try to see if there are any failing cases.
+    // Collect it if it exists and ideally cancel the remaining tests
+    await _forEach(in: testCases) { testCase in
+      // Inlined await _runTestCase(testCase, within: step)
+
+      await Configuration.withCurrent(configuration) {
+        await Test.Case.withCurrent(testCase) {
+          // Have decided NOT to post Events here for testCaseStarted and
+          // testCaseEnded because Xcode will show this as test passed since
+          // the issue reporting is swallowed above
+
+          let sourceLocation = step.test.sourceLocation
+          await Issue.withErrorRecording(at: sourceLocation, configuration: configuration) {
+            // Exit early if the task has already been cancelled.
+            try Task.checkCancellation()
+
+            try await withTimeLimit(for: step.test, configuration: configuration) {
+              try await _applyScopingTraits(for: step.test, testCase: testCase) {
+                try await testCase.body()
+              }
+            } timeoutHandler: { timeLimit in
+              let issue = Issue(
+                kind: .timeLimitExceeded(timeLimitComponents: timeLimit),
+                comments: [],
+                sourceContext: .init(backtrace: .current(), sourceLocation: sourceLocation)
+              )
+              issue.record(configuration: configuration)
+            }
+          }
+        } // Test.Case.withCurrent
+      } // Configuration.withCurrent
+    } // For each test case
+
+    // Second pass: if there were any failing cases we gotta shrink here
+    guard let failingPropertyTestCase = failingCase.rawValue else {
+      // All tests passed :)
+      return
+    }
+
+    let test = step.test
+    // Incredibly cursed but yes we assume there is only one argument to this
+    // property based test case
+    guard
+      let arg = failingPropertyTestCase.testCase.arguments?.first?.value,
+      let shrinkingCaseGenerator = test.shrinkingCaseGenerator
+    else {
+      // Hmm this is bad
+      print("DEBUG: yikes you're missing arguments or shrinking generator")
+      print("DEBUG: if this happens during the demo it would be so embarrasing")
+      return
+    }
+
+    // Ok, we know one of these should fail. It's ordered from smallest to
+    // largest so hopefully we get to one that smaller and fails
+    let shrunkenCases = await shrinkingCaseGenerator(arg)
+
+    // Oh, no. Oh no no no I gotta copy and paste the whole block from above
+    // here again to run all the tests!? /tableflip
+
+    let hitFailingPhaseTwo = Locked(rawValue: false)
+
+    // This is very similar to the standard config but we can cancel
+    // remaining tests once we hit a failure now
+    let secondPassConfig = {
+      var tempConfig = _configuration
+
+      tempConfig.eventHandler = { [oldEventHandler = tempConfig.eventHandler] event, context in
+        if case let .issueRecorded(issue) = event.kind, issue.isFailure {
+          // Yeah this seems not actually that safe because the event handler
+          // isn't guaranteed to update before the next test case I think
+          hitFailingPhaseTwo.withLock { $0 = true }
+        }
+
+        oldEventHandler(event, context) // Show the issue!
+      }
+
+      return tempConfig
+    }()
+
+    await Configuration.withCurrent(secondPassConfig) {
+      for testCase in shrunkenCases {
+        if hitFailingPhaseTwo.rawValue { continue }
+
+        await Test.Case.withCurrent(testCase) {
+          Event.post(.testCaseStarted, for: (step.test, testCase), configuration: configuration)
+          defer {
+            Event.post(.testCaseEnded, for: (step.test, testCase), configuration: configuration)
+          }
+
+          let sourceLocation = step.test.sourceLocation
+          await Issue.withErrorRecording(at: sourceLocation, configuration: configuration) {
+            // Exit early if the task has already been cancelled.
+            try Task.checkCancellation()
+
+            try await withTimeLimit(for: step.test, configuration: configuration) {
+              try await _applyScopingTraits(for: step.test, testCase: testCase) {
+                try await testCase.body()
+              }
+            } timeoutHandler: { timeLimit in
+              let issue = Issue(
+                kind: .timeLimitExceeded(timeLimitComponents: timeLimit),
+                comments: [],
+                sourceContext: .init(backtrace: .current(), sourceLocation: sourceLocation)
+              )
+              issue.record(configuration: configuration)
+            }
+          }
+        } // Test.Case.withCurrent
+      }
+    } // Configuration.withCurrent
+  }
+
+
   /// Run a test case.
   ///
   /// - Parameters:
@@ -396,6 +554,7 @@ extension Runner {
 
     // Track whether or not any issues were recorded across the entire run.
     let issueRecorded = Locked(rawValue: false)
+
     runner.configuration.eventHandler = { [eventHandler = runner.configuration.eventHandler] event, context in
       if case let .issueRecorded(issue) = event.kind, !issue.isKnown {
         issueRecorded.withLock { issueRecorded in
@@ -444,6 +603,7 @@ extension Runner {
         guard shouldContinue else {
           break
         }
+
 
         // Reset the run-wide "issue was recorded" flag for this iteration.
         issueRecorded.withLock { issueRecorded in

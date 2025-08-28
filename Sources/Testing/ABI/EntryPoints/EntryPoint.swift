@@ -76,6 +76,7 @@ func entryPoint(passing args: __CommandLineArguments_v0?, eventHandler: Event.Ha
         configuration.eventHandler = { [oldEventHandler = configuration.eventHandler] event, context in
           eventRecorder.record(event, in: context)
           oldEventHandler(event, context)
+          
         }
       }
     }

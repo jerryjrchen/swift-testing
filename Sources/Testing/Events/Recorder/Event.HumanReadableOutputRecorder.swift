@@ -406,7 +406,10 @@ extension Event.HumanReadableOutputRecorder {
       let testData = testDataGraph?.value ?? .init(startInstant: instant)
       let issues = _issueCounts(in: testDataGraph)
       let duration = testData.startInstant.descriptionOfDuration(to: instant)
-      let testCasesCount = if test.isParameterized, let testDataGraph {
+      let testCasesCount =
+      if test.isPropertyBasedTest {
+        " with randomly generated test cases"
+      } else if test.isParameterized, let testDataGraph {
         " with \(testDataGraph.children.count.counting("test case"))"
       } else {
         ""
