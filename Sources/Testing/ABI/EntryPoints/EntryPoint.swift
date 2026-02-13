@@ -32,6 +32,9 @@ private import Synchronization
 func entryPoint(passing args: __CommandLineArguments_v0?, eventHandler: Event.Handler?) async -> CInt {
   let exitCode = Mutex(EXIT_SUCCESS)
 
+  // Install the fallback event handler early, before running any tests
+  _ = Event.installFallbackEventHandler()
+
   do {
 #if !SWT_NO_EXIT_TESTS
       // If an exit test was specified, run it. `exitTest` returns `Never`.
