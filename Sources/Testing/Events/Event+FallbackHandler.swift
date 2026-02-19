@@ -93,14 +93,15 @@ extension Event {
   /// The implementation of ``installFallbackEventHandler()``.
   private static let _installFallbackEventHandler: Bool = {
 #if compiler(>=6.3) && !SWT_NO_INTEROP
-    if let environmentValue = Environment.variable(named: "SWT_EXPERIMENTAL_INTEROP_ENABLED")
-      .flatMap(Int.init),
-      environmentValue > 0
-    {
+    // if let environmentValue = Environment.variable(named: "SWT_EXPERIMENTAL_INTEROP_ENABLED")
+    //   .flatMap(Int.init),
+    //   environmentValue > 0
+    // {
       return _swift_testing_installFallbackEventHandler(Self._ourFallbackEventHandler)
-    }
-#endif
+    // }
+  #else
     return false
+#endif
   }()
 
   /// Installs the Swift Testing's fallback event handler, indicating that it is
