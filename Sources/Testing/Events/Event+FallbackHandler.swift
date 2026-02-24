@@ -66,7 +66,17 @@ extension Event {
       return
     }
 
+    let sourceContext = SourceContext(
+      // TODO: vvv is this still relevant? Interop should take place in the same test process
+      backtrace: nil,  // A backtrace from the child process will have the wrong address space.
+      sourceLocation: event._sourceLocation.flatMap(SourceLocation.init)
+    )
+    let warnAboutXCTestUsage = Issue(kind: .system, severity: .warning, comments: [
+      "XCTest API was used in a Swift Testing test. Adopt Swift Testing primitives, such as #expect, instead."
+    ], sourceContext: sourceContext)
+
     issue.record()
+    warnAboutXCTestUsage.record()
   }
 
 #if compiler(>=6.3) && !SWT_NO_INTEROP
