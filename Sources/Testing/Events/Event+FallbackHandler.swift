@@ -71,7 +71,7 @@ extension Event {
       backtrace: nil,  // A backtrace from the child process will have the wrong address space.
       sourceLocation: event._sourceLocation.flatMap(SourceLocation.init)
     )
-    let warnAboutXCTestUsage = Issue(kind: .system, severity: .warning, comments: [
+    let warnAboutXCTestUsage = Issue(kind: .apiMisused, severity: .warning, comments: [
       "XCTest API was used in a Swift Testing test. Adopt Swift Testing primitives, such as #expect, instead."
     ], sourceContext: sourceContext)
 
