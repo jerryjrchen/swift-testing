@@ -89,6 +89,9 @@ else()
   add_custom_target(TestingMacros)
 endif()
 
+# Makes this variable visible to cmake/modules
+set(SwiftTesting_MACRO_PATH "${SwiftTesting_MACRO_PATH}" PARENT_SCOPE)
+
 if(NOT SwiftTesting_MACRO_PATH)
   message(STATUS "TestingMacros: (none)")
 elseif(SwiftTesting_MACRO_PATH)
